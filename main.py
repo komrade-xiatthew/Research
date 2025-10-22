@@ -44,6 +44,6 @@ for i in range(0, img_mask.shape[1]):
 print(background_mask)
 print(foreground_mask)
 
-ppl = Pipeline("ssv2a.json", "ssv2a.pth", "cuda")
+ppl = Pipeline("checkpoints/ssv2a.json", "checkpoints/ssv2a.pth", "cuda")
 print(ppl.clips2clap(clips=img_mask))
 
