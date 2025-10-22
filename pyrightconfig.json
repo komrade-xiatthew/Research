@@ -1,0 +1,8 @@
+{
+    "venvPath": "/home/username/.virtualenvs/",
+    "venv": "myenv",
+    "reportOptionalSubscript": false,
+    "reportOptionalMemberAccess": false,
+    "reportCallIssue": false,
+    "reportOptionalCall": false
+}
