@@ -11,13 +11,7 @@ import torch.nn as nn
 from tqdm import tqdm
 import soundfile as sf
 
-from data.detect import detect
-from data.tpairs import tpairs2tclips
-from data.utils import clip_embed_images, get_timestamp, save_wave, set_seed, emb2seq, batch_extract_frames, \
-    prior_embed_texts
-from model.aggregator import Aggregator
-from model.clap import clap_embed_auds
-from model.aldm import build_audioldm, emb_to_audio
+from data.utils import get_timestamp
 from model.generator import Generator
 from model.manifold import Manifold
 from model.remixer import Remixer

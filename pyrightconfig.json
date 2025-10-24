@@ -4,5 +4,6 @@
     "reportOptionalSubscript": false,
     "reportOptionalMemberAccess": false,
     "reportCallIssue": false,
-    "reportOptionalCall": false
+    "reportOptionalCall": false,
+    "typeCheckingMode": "off"
 }
