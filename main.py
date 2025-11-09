@@ -43,5 +43,5 @@ claps = ppl.clips2foldclaps(clips=outputs)
 
 # AudioLDM
 model = build_audioldm(model_name="audioldm-s-full-v2", device="cuda")
-local_wave = emb_to_audio(model, claps, batchsize=64, duration=10)
+local_wave = emb_to_audio(model, claps, batchsize=32, duration=10)
 save_wave(local_wave, "audio", name="whatevs")
