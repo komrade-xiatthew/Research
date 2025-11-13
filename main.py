@@ -8,7 +8,7 @@ from mask import get_mask
 from model.pipeline import Pipeline
 from model.aldm import build_audioldm, emb_to_audio
 import util
-from data.utils import save_wave
+from data.utils import save_wave, emb2seq
 
 model = CLIPVisionModel.from_pretrained("openai/clip-vit-base-patch32")
 processor = AutoProcessor.from_pretrained("openai/clip-vit-base-patch32")
@@ -36,12 +36,8 @@ for i in range(0, img_mask.shape[1]):
     if img_mask[0][i] < 0.5:
        foreground_mask[0][i+1] = np.zeros(outputs.shape[2])
 
-ppl = Pipeline("ssv2a.json", "checkpoints/ssv2a.pth", "cuda")
-outputs = torch.tensor(outputs).to("cuda")
-print(outputs)
-claps = ppl.clips2foldclaps(clips=outputs)
+model = Pipeline("ssv2a.json", "checkpoints/ssv2a.pth", "cuda")
+clips = torch.tensor(outputs).to("cuda")
+jumps = [len(img) for img in images]
 
-# AudioLDM
-model = build_audioldm(model_name="audioldm-s-full-v2", device="cuda")
-local_wave = emb_to_audio(model, claps, batchsize=32, duration=10)
-save_wave(local_wave, "audio", name="whatevs")
+model.image_to_audio([clip[0] for clip in clips], [clip[1:] for clip in clips], jumps)

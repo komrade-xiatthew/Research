@@ -11,7 +11,8 @@ import torch.nn as nn
 from tqdm import tqdm
 import soundfile as sf
 
-from data.utils import get_timestamp
+from data.utils import get_timestamp, clip_embed_images, emb2seq, save_wave
+from model.aldm import build_audioldm, emb_to_audio
 from model.generator import Generator
 from model.manifold import Manifold
 from model.remixer import Remixer
@@ -93,7 +94,57 @@ class Pipeline(nn.Module):
     def __str__(self):
         return (f"SDV2A@{self.timestamp}"
                 f"{json.dumps(self.config, sort_keys=True, indent=4)}")
-    
+
+    def cycle_mix(self, clips, fixed_src=None, its=1, var_samples=64, samples=16, shuffle=True):
+        """
+        clips: [B, slot, E]  (global clip injected at first token)
+        """
+        B = clips.shape[0]
+        rt_claps = torch.empty(B, 512).to(self.device)  # [B, E]
+        rt_scores = torch.ones(B).to(self.device)  # [B]
+        src = self.manifold.fold_clips(clips, var_samples=var_samples, normalize=False)
+        for i in range(its + 1):  # one more round to include its = 0 (no recursion)
+            if fixed_src is not None:  # reinject audio sources
+                src_mask = torch.sum(clips.bool(), dim=-1).bool().logical_not()  # zero slots
+                src[src_mask, ...] = fixed_src[src_mask, ...]
+
+            src_claps = self.generator.fold2claps(src, var_samples=var_samples)
+
+            src_claps[:, 0, :] = 0  # suppress global clap in clap score later
+
+            if i > 0:  # recursion, inject the best clap as the global source code
+                src[:, 0, :] = self.manifold.fold_claps(rt_claps, var_samples=var_samples, normalize=False)
+
+            # sample remixed claps
+            remix_claps = torch.empty(src_claps.shape[0], samples, 512).to(self.device)  # [B, S, E]
+            for j in range(samples):
+                if self.remixer.guidance == 'generator':
+                    remix_claps[:, j, :] = self.remixer.sample(self.generator.fold2claps(src, var_samples=var_samples),
+                                                               clips,
+                                                               var_samples=var_samples, normalize=True, shuffle=shuffle)
+                elif self.remixer.guidance == 'manifold+generator':
+                    src_code = torch.cat([src, self.generator.fold2claps(src, var_samples=var_samples)], dim=-1)
+                    remix_claps[:, j, :] = self.remixer.sample(src_code, clips,
+                                                               var_samples=var_samples, normalize=True, shuffle=shuffle)
+                else:
+                    remix_claps[:, j, :] = self.remixer.sample(src, clips,
+                                                               var_samples=var_samples, normalize=True, shuffle=shuffle)
+
+            # select the remixed clap with highest CLAP-Score, can use std or mean
+            clap_score = torch.einsum('bmi,bni->bmn', remix_claps, src_claps)  # [B, S, slot]
+            clap_score /= (torch.einsum('bmi,bni->bmn',
+                                        remix_claps.norm(dim=-1, keepdim=True),
+                                        src_claps.norm(dim=-1, keepdim=True)) + 1e-6)
+            clap_score = torch.std(clap_score, dim=-1)  # [B, S, slot] -> [B, S]
+            best_remix_claps = torch.argmin(clap_score, dim=-1)
+            clap_score = clap_score[torch.arange(B), best_remix_claps]
+            updates = clap_score < rt_scores
+            rt_scores[updates] = clap_score[updates]
+            best_remix_claps = remix_claps[torch.arange(B), best_remix_claps]  # [B, S, E] -> [B, E]
+            rt_claps[updates] = best_remix_claps[updates]
+
+        return rt_claps
+
     # reconstruct an audio's clap
     def recon_claps(self, claps, var_samples=64):
         fold_claps = self.manifold.fold_claps(claps, var_samples=var_samples)
@@ -122,4 +173,24 @@ class Pipeline(nn.Module):
             src = torch.cat([src, fold_gen_claps], dim=-1)
         clap = self.remixer.sample(src, clips, var_samples=var_samples, normalize=normalize)
         return clap
+
+    @torch.no_grad()
+    def image_to_audio(global_clips, local_clips, jumps):
+        # SDV2A
+        model = Pipeline("ssv2a.json", "checkpoints/ssv2a.pth", "cuda")
+        model.eval()
+        with torch.no_grad():
+            # remix
+            remix_clips = emb2seq(jumps, local_clips, max_length=model.remixer.slot, delay=1, device=model.device)
+            remix_clips[:, 0, :] = global_clips  # blend in global clip
+            remix_clap = model.cycle_mix(remix_clips, its=3, var_samples=1,
+                                        samples=16, shuffle=True)
+
+        # clean up gpu
+        del global_clips, local_clips, remix_clips
+
+        # AudioLDM
+        model = build_audioldm(model_name="audioldm-s-full-v2", device="cuda")
+        local_wave = emb_to_audio(model, remix_clap, batchsize=32, duration=10)
+        save_wave(local_wave, "audio", name="whatevs")
 
