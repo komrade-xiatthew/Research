@@ -10,7 +10,7 @@ from torch.utils.data import Dataset, DataLoader
 import torch.nn.functional as F
 
 from model.modules import PositionalEmbedding, TransEncoder, MLP, sample_normal
-# from ssv2a.train.loss import kld
+# from train.loss import kld
 
 
 class Aggregator(nn.Module):

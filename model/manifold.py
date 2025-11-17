@@ -5,7 +5,7 @@ import torch.nn as nn
 
 from data.utils import read_classes
 from model.modules import MLP, LinearProjection, sample_normal, TransEncoder, PositionalEmbedding, MoE
-# from ssv2a.train.loss import contrastive_loss, kld, rrl
+# from train.loss import contrastive_loss, kld, rrl
 
 
 class ManifoldEncoder(nn.Module):

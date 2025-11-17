@@ -11,7 +11,12 @@ import torch.nn as nn
 from tqdm import tqdm
 import soundfile as sf
 
-from data.utils import get_timestamp, clip_embed_images, emb2seq, save_wave
+from data.detect import detect
+from data.tpairs import tpairs2tclips
+from data.utils import clip_embed_images, get_timestamp, save_wave, set_seed, emb2seq, batch_extract_frames, \
+    prior_embed_texts
+from model.aggregator import Aggregator
+from model.clap import clap_embed_auds
 from model.aldm import build_audioldm, emb_to_audio
 from model.generator import Generator
 from model.manifold import Manifold
@@ -35,7 +40,10 @@ class Pipeline(nn.Module):
         # SDV2A Manifold
         self.manifold = Manifold(**config)
         # if the generator is just a linear operation, ignore modelling
-        if config['generator']['arch'] == 'linear':
+        if config['generator']['disabled']:
+            self.generator = None
+            self.skip_gen_model = True
+        elif config['generator']['arch'] == 'linear':
             self.generator = self.linear_generator
             self.skip_gen_model = True
         else:
@@ -95,6 +103,7 @@ class Pipeline(nn.Module):
         return (f"SDV2A@{self.timestamp}"
                 f"{json.dumps(self.config, sort_keys=True, indent=4)}")
 
+    # postprocessing: cycle generation
     def cycle_mix(self, clips, fixed_src=None, its=1, var_samples=64, samples=16, shuffle=True):
         """
         clips: [B, slot, E]  (global clip injected at first token)
@@ -174,23 +183,95 @@ class Pipeline(nn.Module):
         clap = self.remixer.sample(src, clips, var_samples=var_samples, normalize=normalize)
         return clap
 
-    @torch.no_grad()
-    def image_to_audio(global_clips, local_clips, jumps):
-        # SDV2A
-        model = Pipeline("ssv2a.json", "checkpoints/ssv2a.pth", "cuda")
-        model.eval()
-        with torch.no_grad():
+    def tpairs2clap(self, pairs, var_samples=64, normalize=False):
+        clips = tpairs2tclips(pairs, max_length=self.remixer.slot, device=self.device)
+        clap = self.clips2clap(clips, var_samples, normalize)
+        return clap
+
+
+# in this application we recycle models to save memory, the intermediate products are saved to disk under data_cache
+@torch.no_grad()
+def image_to_audio(images, text="", transcription="", save_dir="", config=None,
+                   gen_remix=True, gen_tracks=False, emb_only=False,
+                   pretrained=None, batch_size=64, var_samples=1,
+                   shuffle_remix=True, cycle_its=3, cycle_samples=16, keep_data_cache=False,
+                   duration=10, seed=42, device='cuda'):
+    set_seed(seed)
+    # revert to default model config if not supplied
+    if not os.path.exists(config):
+        config = Path().resolve() / 'configs' / 'model.json'
+    with open(config, 'r') as fp:
+        config = json.load(fp)
+
+    if not save_dir:
+        save_dir = Path().resolve() / 'output'  # default saving folder
+    else:
+        save_dir = Path(save_dir)
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+        if gen_tracks:
+            os.makedirs(save_dir / 'tracks')
+    cache_dir = save_dir / 'data_cache'
+
+    # segmentation proposal
+    if not isinstance(images, dict):
+        local_imgs = detect(images, config['detector'],
+                            save_dir=cache_dir / 'masked_images', batch_size=batch_size, device=device)
+    else:
+        local_imgs = copy.deepcopy(images)
+        images = [k for k in images]
+        keep_data_cache = True  # prevent deleting nonexistent folder
+
+    # clip embed
+    global_clips = clip_embed_images(images, batch_size=batch_size, device=device)
+    imgs = []
+    for img in images:
+        imgs += [li for li, _ in local_imgs[img]]
+    local_clips = clip_embed_images(imgs, batch_size=batch_size, device=device)
+
+    jumps = [len(local_imgs[img]) for img in local_imgs]
+
+    # SDV2A
+    model = Pipeline(copy.deepcopy(config), pretrained, device)
+    model.eval()
+    with torch.no_grad():
+        # clips to claps
+        local_claps = model.clips2foldclaps(local_clips, var_samples=var_samples)
+
+        if gen_remix:
             # remix
             remix_clips = emb2seq(jumps, local_clips, max_length=model.remixer.slot, delay=1, device=model.device)
             remix_clips[:, 0, :] = global_clips  # blend in global clip
-            remix_clap = model.cycle_mix(remix_clips, its=3, var_samples=1,
-                                        samples=16, shuffle=True)
+            remix_clap = model.cycle_mix(remix_clips, its=cycle_its, var_samples=var_samples,
+                                         samples=cycle_samples, shuffle=shuffle_remix)
 
-        # clean up gpu
-        del global_clips, local_clips, remix_clips
+            del remix_clips
 
-        # AudioLDM
-        model = build_audioldm(model_name="audioldm-s-full-v2", device="cuda")
-        local_wave = emb_to_audio(model, remix_clap, batchsize=32, duration=10)
-        save_wave(local_wave, "audio", name="whatevs")
+    if emb_only:
+        if not keep_data_cache:
+            rmtree(cache_dir)
+        return remix_clap.detach().cpu().numpy()
+
+    # clean up gpu
+    # del global_clips, local_clips, remix_clips
+    del local_clips
+
+    audioldm_v = config['audioldm_version']
+    # AudioLDM
+    model = build_audioldm(model_name=audioldm_v, device=device)
+    if gen_tracks:
+        local_wave = emb_to_audio(model, local_claps, batchsize=batch_size, duration=duration())
+    if gen_remix:
+        waveform = emb_to_audio(model, remix_clap, batchsize=batch_size, duration=duration)
+
+    # I/O
+    if gen_tracks:
+        local_names = [Path(img).name.replace('.png', '') for img in imgs]
+        save_wave(local_wave, save_dir / 'tracks', name=local_names)
+    if gen_remix:
+        save_wave(waveform, save_dir,
+                  name=[os.path.basename(img).replace('.png', '') for img in images])
+    if not keep_data_cache:
+        rmtree(cache_dir)
+
 

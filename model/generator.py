@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 
 from model.modules import MLP, TransEncoder, PositionalEmbedding, sample_normal, MoE
-# from ssv2a.train.loss import rrl
+# from train.loss import rrl
 
 
 class Generator(nn.Module):

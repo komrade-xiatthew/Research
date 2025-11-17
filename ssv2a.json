@@ -8,7 +8,7 @@
   "clap_dim": 512,
   "manifold_dim": 768,
   "detector": {
-    "detection_model": "",
+    "detection_model": "checkpoints/yolov8x-oiv7.pt",
     "segment_model": "",
     "crop": true,
     "conf": 0.25,
