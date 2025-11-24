@@ -215,8 +215,7 @@ def image_to_audio(images, text="", transcription="", save_dir="", config=None,
 
     # segmentation proposal
     if not isinstance(images, dict):
-        local_imgs = detect(images, config['detector'],
-                            save_dir=cache_dir / 'masked_images', batch_size=batch_size, device=device)
+        local_imgs = detect("cat.jpeg")
     else:
         local_imgs = copy.deepcopy(images)
         images = [k for k in images]
@@ -271,7 +270,7 @@ def image_to_audio(images, text="", transcription="", save_dir="", config=None,
     if gen_remix:
         save_wave(waveform, save_dir,
                   name=[os.path.basename(img).replace('.png', '') for img in images])
-    if not keep_data_cache:
-        rmtree(cache_dir)
+    
+    rmtree(locals)
 
 
