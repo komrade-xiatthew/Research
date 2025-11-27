@@ -11,6 +11,8 @@ import torch.nn as nn
 from tqdm import tqdm
 import soundfile as sf
 
+from util import downsample_mask_to_patch_weights
+from mask import get_mask
 from data.detect import detect
 from data.tpairs import tpairs2tclips
 from data.utils import clip_embed_images, get_timestamp, save_wave, set_seed, emb2seq, batch_extract_frames, \
@@ -215,7 +217,8 @@ def image_to_audio(images, text="", transcription="", save_dir="", config=None,
 
     # segmentation proposal
     if not isinstance(images, dict):
-        local_imgs = detect("cat.jpeg")
+        local_imgs = detect(images, config['detector'],
+                            save_dir=cache_dir / 'masked_images', batch_size=batch_size, device=device)
     else:
         local_imgs = copy.deepcopy(images)
         images = [k for k in images]
@@ -223,6 +226,26 @@ def image_to_audio(images, text="", transcription="", save_dir="", config=None,
 
     # clip embed
     global_clips = clip_embed_images(images, batch_size=batch_size, device=device)
+
+    img_mask = get_mask(images[0], 500, 500, [1])
+    img_mask = downsample_mask_to_patch_weights(torch.tensor([img_mask]), global_clips)
+
+    print(global_clips.shape)
+
+    bg_clips = copy.deepcopy(global_clips)
+    for clip in bg_clips:
+        for i in range(0, img_mask.shape[1]):
+            if img_mask[0][i] >= 0.5:
+                clip[0][i] = np.zeros(clip.shape[2])
+
+    fg_clips = copy.deepcopy(global_clips)
+    for clip in fg_clips:
+        for i in range(0, img_mask.shape[1]):
+            if img_mask[0][i] < 0.5:
+                clip[0][i] = np.zeros(clip.shape[2])
+
+    return
+
     imgs = []
     for img in images:
         imgs += [li for li, _ in local_imgs[img]]
@@ -271,6 +294,6 @@ def image_to_audio(images, text="", transcription="", save_dir="", config=None,
         save_wave(waveform, save_dir,
                   name=[os.path.basename(img).replace('.png', '') for img in images])
     
-    rmtree(locals)
+    rmtree("locals")
 
 

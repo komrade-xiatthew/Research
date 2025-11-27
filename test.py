@@ -4,10 +4,14 @@ import argparse
 import glob
 import json
 import socket
+import copy
 
 
 from model.pipeline import Pipeline, image_to_audio
 from data.detect import detect
+from data.utils import clip_embed_images
+from mask import get_mask
+from util import downsample_mask_to_patch_weights
 
 # if __name__ == '__main__':
 #     parser = argparse.ArgumentParser(description='SSV2A')
@@ -25,9 +29,25 @@ from data.detect import detect
 #     args = parser.parse_args()
 
 images = glob.glob(f'{"images"}/*')
-config = json.load(open("ssv2a.json", 'r'))
-print(socket.gethostname())
-print(detect(images, config["detector"], save_dir = "locals", batch_size = 64, device = socket.gethostname()))
+global_clips = clip_embed_images(images, batch_size=64, device=device)
+
+img_mask = get_mask(images[0], 500, 500, [1])
+img_mask = downsample_mask_to_patch_weights(torch.tensor([img_mask]), global_clips)
+
+
+print(global_clips.shape)
+
+bg_clips = copy.deepcopy(global_clips)
+for index, clip in enumerate(bg_clips):
+    for i in range(0, img_mask.shape[1]):
+        if img_mask[0][i] >= 0.5:
+            clip[0][i] = np.zeros(clip.shape[2])
+
+fg_clips = copy.deepcopy(global_clips)
+for index, clip in enumerate(fg_clips):
+    for i in range(0, img_mask.shape[1]):
+        if img_mask[0][i] < 0.5:
+            clip[0][i] = np.zeros(clip.shape[2])
 
 '''
 python infer.py \

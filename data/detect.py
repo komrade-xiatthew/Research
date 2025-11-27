@@ -121,44 +121,7 @@ def yolo_detect_videos(videos, signatures, save_dir, imgsz=(512, 512), fps=4, co
 
     return positives
 
-def detect(add_path, background = True):
-
-    if not os.path.exists("locals"):
-      os.mkdir("locals")
-    segments = {}
-    labels = []
-    images = []
-    for path in os.listdir("images"):
-        if not path.startswith('.'):
-            png_img = Image.open("images/"+path)
-            png_img_path = "locals/" + Path(path).stem + ".png"
-            png_img.save(png_img_path, "PNG")
-            images.append(np.array(Image.open(png_img_path).convert("RGB")))
-            labels.append("images/"+path)
-
-    add_png = Image.open("images/"+add_path)
-    add_png_path = "locals/" + Path(add_path).stem + ".png"
-    add_png.save(add_png_path, "PNG")
-
-    for i in range(len(images)):
-        segments[labels[i]] = []
-        img_mask = get_mask(images[i], 200, 200, [1])
-
-        mask = images[i].copy()
-        for x in range(img_mask.shape[0]):
-            for y in range (img_mask.shape[1]):
-                if background and img_mask[x][y] >= 0.5:
-                    mask[x][y] = 0
-                elif not background and img_mask[x][y] < 0.5:
-                    mask[x][y] = 0
-        img_file = Path("locals") / Path(labels[i]).name.replace('.png', f'_mask.png')
-        Image.fromarray(mask).save(img_file, "PNG")
-        segments[labels[i]].append((str(img_file), 1))
-        segments[labels[i]].append((str(add_png_path), 1))
-
-    return segments
-
-def detect_old(images, detector_cfg, save_dir='masked_images', batch_size=64, device='cuda'):
+def detect(images, detector_cfg, save_dir='masked_images', batch_size=64, device='cuda'):
   detector_cfg['save_dir'] = save_dir
   detector_cfg['batch_size'] = batch_size
   detector_cfg['device'] = device
