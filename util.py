@@ -29,7 +29,7 @@ def downsample_mask_to_patch_weights(mask, emb, target_res=224):
     returns: B x (T-1) weights aligned to patch tokens emb[:,1:,:]
     """
     Bm, H, W = mask.shape
-    Be, T, _ = emb.shape
+    Be, T = emb.shape
     assert Bm == Be, "batch sizes must match"
     n_tokens = T - 1
     g = int(round(n_tokens ** 0.5))       # grid size, e.g. 49 -> 7

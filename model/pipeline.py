@@ -4,6 +4,7 @@ import json
 import os.path
 from pathlib import Path
 from shutil import rmtree
+from PIL import Image
 
 import numpy as np
 import torch
@@ -12,7 +13,7 @@ from tqdm import tqdm
 import soundfile as sf
 
 from util import downsample_mask_to_patch_weights
-from mask import get_mask
+from mask import get_masks
 from data.detect import detect
 from data.tpairs import tpairs2tclips
 from data.utils import clip_embed_images, get_timestamp, save_wave, set_seed, emb2seq, batch_extract_frames, \
@@ -226,23 +227,28 @@ def image_to_audio(images, text="", transcription="", save_dir="", config=None,
 
     # clip embed
     global_clips = clip_embed_images(images, batch_size=batch_size, device=device)
-
-    img_mask = get_mask(images[0], 500, 500, [1])
-    img_mask = downsample_mask_to_patch_weights(torch.tensor([img_mask]), global_clips)
-
     print(global_clips.shape)
-
     bg_clips = copy.deepcopy(global_clips)
-    for clip in bg_clips:
-        for i in range(0, img_mask.shape[1]):
-            if img_mask[0][i] >= 0.5:
-                clip[0][i] = np.zeros(clip.shape[2])
-
     fg_clips = copy.deepcopy(global_clips)
-    for clip in fg_clips:
-        for i in range(0, img_mask.shape[1]):
-            if img_mask[0][i] < 0.5:
-                clip[0][i] = np.zeros(clip.shape[2])
+
+    img_masks = torch.tensor(get_masks(images, 500, 500, [1]))
+    print(images)
+    print(global_clips.shape)
+    print(img_masks.shape)
+    img_masks = downsample_mask_to_patch_weights(torch.tensor(img_masks), global_clips)
+    print(images)
+    print(global_clips.shape)
+    print(img_masks.shape)
+    
+
+    for index in range(len(images)):
+      for i in range(0, img_masks.shape[1]):
+          if img_masks[index][i] >= 0.5:
+              bg_clips[index][i] = np.zeros(bg_clips.shape[1])
+
+      for i in range(0, img_masks.shape[1]):
+          if img_masks[index][i] < 0.5:
+              fg_clips[index][i] = np.zeros(fg_clips.shape[1])
 
     return
 
@@ -294,6 +300,7 @@ def image_to_audio(images, text="", transcription="", save_dir="", config=None,
         save_wave(waveform, save_dir,
                   name=[os.path.basename(img).replace('.png', '') for img in images])
     
-    rmtree("locals")
+    if not keep_data_cache:
+        rmtree(cache_dir)
 
 

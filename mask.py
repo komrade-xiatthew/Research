@@ -40,9 +40,11 @@ sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
 predictor = SAM2ImagePredictor(sam2_model)
 
 
-def get_mask (image, x, y, labels):
-
-    predictor.set_image(image)
+def get_masks (images, x, y, labels):
+  res = []
+  for image in images:
+    img_arr = np.array(Image.open(image).convert("RGB"))
+    predictor.set_image(img_arr)
 
     masks, scores, logits = predictor.predict(
         point_coords=np.array([[x,y]]),
@@ -54,4 +56,5 @@ def get_mask (image, x, y, labels):
     scores = scores[sorted_ind]
     logits = logits[sorted_ind]
 
-    return masks[0]
+    res.append(masks[0])
+  return res

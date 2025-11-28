@@ -8,7 +8,6 @@ from ultralytics.models.sam import Predictor as SAMPredictor
 from PIL import Image
 from tqdm.auto import tqdm
 
-from mask import get_mask
 
 # please link to the CaR modules from https://github.com/google-research/google-research/tree/master/clip_as_rnn
 from data.utils import read_classes, video2images, mask2bbox, elbow
