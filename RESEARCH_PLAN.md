@@ -35,6 +35,9 @@ CLIP embeddings encode visual semantics in a high-dimensional space where:
 
 SSV2A learns a mapping from visual semantics (CLIP space) to audio semantics (CLAP space). If visual semantics are modified (cat suppressed, duck boosted), the learned mapping should produce corresponding audio changes (less cat sounds, more duck sounds).
 
+### Checkpoints
+Download sam2.1_hiera_large.pt, ssv2a.pth and yolo8x-oiv7.pt to ./checkpoints
+
 ---
 
 ## Detailed Step-by-Step Pipeline
@@ -251,26 +254,41 @@ E_final = E_final / ||E_final||_2
 
 ---
 
-### STEP 8: Audio Generation via SSV2A Pipeline
+### STEP 8: Audio Generation via Hybrid SSV2A Pipeline
 
-#### 8.1 CLIP → Manifold Encoding
-```
-E_final [768] → pipe.manifold.fold_clips() → manifold_emb [768]
-```
+**Key Innovation:** We preserve SSV2A's full pipeline (YOLO detection + Remixer) but inject our SVD-manipulated embedding as the global context.
 
-#### 8.2 Manifold → CLAP Generation
+#### 8.1 YOLO Detection (preserved from SSV2A)
 ```
-manifold_emb [768] → pipe.generator.fold2claps() → clap_emb [512]
+I_1 (edited image) → YOLO detector → detected objects
+detected objects → CLIP → local_clips [N, 768]
 ```
+This captures object-level semantics that SSV2A relies on for quality audio.
 
-**This is where visual→audio transfer happens!** The generator learned to map visual features to audio features.
-
-#### 8.3 CLAP → Audio Waveform
+#### 8.2 Inject Manipulated Global Embedding
 ```
-clap_emb [512] → AudioLDM.emb_to_audio() → waveform [1, 220500]
+E_final [768] → remix_clips[:, 0, :] = E_final  (slot 0 = global context)
+local_clips → remix_clips[:, 1:, :]  (slots 1+ = detected objects)
+```
+**Your SVD-manipulated embedding replaces the normal global CLIP embedding.**
+
+#### 8.3 Remixer (cycle_mix)
+```
+remix_clips [B, slots, 768] → cycle_mix() → remix_clap [B, 512]
+```
+The Remixer combines global context with local object embeddings to produce a coherent CLAP embedding.
+
+#### 8.4 CLAP → Audio Waveform
+```
+remix_clap [512] → AudioLDM.emb_to_audio() → waveform [1, 220500]
 ```
 
 **Result:** 10-second audio waveform at 22.05kHz
+
+**Why this works better:**
+- Preserves SSV2A's object detection for local audio sources
+- Your SVD manipulation affects the global "scene context"
+- Remixer normalizes and blends embeddings, reducing OOD issues
 
 ---
 
@@ -278,22 +296,37 @@ clap_emb [512] → AudioLDM.emb_to_audio() → waveform [1, 220500]
 
 #### Baselines
 
-**Baseline 1: Original image**
+**NOTE:** SSV2A's full pipeline is more complex than just CLS embedding:
+1. Object detection (YOLO) → segments objects in image
+2. Local CLIP embeddings for each detected object
+3. Global CLIP embedding for full image  
+4. Remixer with cycle_mix to combine local+global embeddings
+5. AudioLDM to generate audio
+
+**Baseline 1: Original image (full SSV2A pipeline)**
 ```
-I_0 → CLIP (CLS only) → SSV2A → audio_original
+I_0 → YOLO detect → local CLIPs + global CLIP → Remixer → AudioLDM → audio_original
 Expected: Dog + cat sounds
 ```
 
-**Baseline 2: Edited image**
+**Baseline 2: Edited image (full SSV2A pipeline)**
 ```
-I_1 → CLIP (CLS only) → SSV2A → audio_edited
+I_1 → YOLO detect → local CLIPs + global CLIP → Remixer → AudioLDM → audio_edited
 Expected: Dog + duck sounds
 ```
 
-#### Your Method
+#### Your Method (Hybrid Approach)
 ```
-I_0 + I_1 + masks → manipulated CLIP → SSV2A → audio_manipulated
-Expected: Dog + duck sounds (with modified strength)
+Step 1: Generate manipulated global embedding
+  I_0 + I_1 + SAM2 masks → SVD manipulation → E_final [768]
+
+Step 2: Run SSV2A with manipulated global
+  I_1 → YOLO detect → local_clips
+  E_final → remix_clips[:, 0, :]  (inject as global)
+  local_clips → remix_clips[:, 1:, :]
+  remix_clips → cycle_mix → remix_clap → AudioLDM → audio_manipulated
+
+Expected: Dog + duck sounds (with semantic control via SVD)
 ```
 
 #### Metrics
@@ -342,17 +375,20 @@ Expected: Dog + duck sounds (with modified strength)
 
 ### main.py Pipeline
 
-Complete 10-step orchestration:
-1. Load images and generate masks
-2. Extract CLIP tokens
-3. Downsample masks to patch grid
+**Hybrid approach** combining SVD manipulation with full SSV2A:
+
+1. Load images and generate SAM2 masks
+2. Extract CLIP tokens (full 257 tokens, not just CLS)
+3. Downsample masks to patch grid (256 patches)
 4. Extract region-specific patches
-5. Apply SVD manipulation
-6. Aggregate to single embeddings
-7. Combine embeddings
-8. Load SSV2A pipeline
-9. CLIP → CLAP → Audio
-10. Save results
+5. Apply SVD manipulation (suppress cat, boost duck)
+6. Combine embeddings to create manipulated global
+7. **Call manipulated_image_to_audio():**
+   - YOLO detection on edited image → local object embeddings
+   - Inject manipulated global at slot 0
+   - Run cycle_mix Remixer
+   - AudioLDM generates audio
+8. Save results
 
 ---
 
@@ -360,19 +396,15 @@ Complete 10-step orchestration:
 
 **Novel aspects:**
 1. First work to apply SVD-based semantic manipulation to CLIP embeddings for audio generation
-2. Region-aware audio generation using spatial masks
+2. Region-aware audio generation using spatial masks (SAM2)
 3. Transfer of AudioEditor's EOT suppression concept to image-to-audio domain
+4. **Hybrid pipeline** that preserves SSV2A's audio quality while enabling semantic control
 
-**Limitations:**
-1. This is generation, not editing (doesn't preserve original audio)
-2. SVD-manipulated embeddings are out-of-distribution
-3. Success depends on SSV2A's learned visual-audio mapping
+**Key insight:**
+SVD manipulation alone creates out-of-distribution embeddings. By integrating with SSV2A's full pipeline (YOLO + Remixer), the manipulated global embedding is normalized and blended with detected object embeddings, producing higher quality audio.
 
-**Future work:**
-1. Integrate with AudioEditor for true audio editing
-2. Learn optimal K, α, β values
-3. Multi-object manipulation
-4. Temporal control for longer audio sequences
+**Motivation:**
+We propose SVD-based manipulation as a global semantic prior that guides SSV2A's generation. While local object detection stills contributes, the global embedding provides high-level semantic control over the scene's audio characteristics.
 
 ---
 
@@ -380,14 +412,91 @@ Complete 10-step orchestration:
 
 | Parameter | Default | Range | Purpose |
 |-----------|---------|-------|---------|
-| K | 10 | 5-15 | Number of singular values to modify |
-| α (suppress) | 0.1 | 0.1-0.3 | Suppression factor for removal |
-| β (boost) | 2.0 | 1.5-3.0 | Amplification factor for addition |
-| α_mix (suppress weight) | 0.2 | 0.1-0.3 | Mixing weight for suppressed embedding |
-| β_mix (boost weight) | 0.5 | 0.4-0.6 | Mixing weight for boosted embedding |
-| γ_mix (bg weight) | 0.3 | 0.2-0.4 | Mixing weight for background |
+| K | 5 | 1-15 | Number of singular values to modify |
+| α (suppress) | 0.3 | 0.1-0.5 | Suppression factor for removal |
+| β (boost) | 1.5 | 1.1-3.0 | Amplification factor for addition |
+| α_mix (suppress weight) | 0.1 | 0.0-0.3 | Mixing weight for suppressed embedding |
+| β_mix (boost weight) | 0.4 | 0.2-0.6 | Mixing weight for boosted embedding |
+| γ_mix (bg weight) | 0.1 | 0.0-0.3 | Mixing weight for background |
+| direct_mix | 0.4 | 0.2-0.6 | Weight for normal edited image CLIP |
+| cycle_its | 64 | - | SSV2A cycle mix iterations |
+| cycle_samples | 64 | - | SSV2A cycle mix samples |
 | Patch grid size | 16 | - | For ViT-L/14 @ 224×224 |
 | Mask threshold | 0.5 | 0.4-0.6 | Binarization threshold |
+
+---
+
+## Code Changes from Original SSV2A
+
+This section documents modifications made to implement the SVD-based manipulation pipeline.
+
+### Modified Files
+
+#### 1. main.py (New File)
+Main entry point implementing the hybrid SVD + SSV2A pipeline.
+
+**New Functions:**
+- `visualize_mask()`: Saves SAM2 mask visualizations
+- `generate_baseline_audio()`: Generates baseline audio using full SSV2A pipeline
+- `manipulated_image_to_audio()`: **Key function** - runs SSV2A with manipulated global embedding
+- `main_pipeline()`: Orchestrates the full SVD manipulation pipeline
+- `set_seed()`: Sets random seed for reproducibility
+
+**Key Parameters:**
+```python
+# SVD Hyperparameters
+SVD_K = 5           # Number of top singular values to modify
+SVD_ALPHA = 0.3     # Suppression factor
+SVD_BETA = 1.5      # Boost factor
+
+# Embedding Mixing Weights
+MIX_ALPHA = 0.1     # Suppressed embedding weight
+MIX_BETA = 0.4      # SVD-boosted embedding weight
+MIX_GAMMA = 0.1     # Background embedding weight
+MIX_DIRECT = 0.4    # Normal CLIP embedding weight
+
+# SSV2A Parameters (matching original)
+cycle_its = 64      # Cycle mix iterations
+cycle_samples = 64  # Cycle mix samples
+var_samples = 64    # Variational samples
+```
+
+#### 2. util.py (New File)
+Utility functions for CLIP token extraction and SVD manipulation.
+
+**Functions:**
+- `extract_full_clip_tokens()`: Extracts all 257 CLIP tokens (CLS + 256 patches)
+- `downsample_mask_to_patch_weights()`: Aligns SAM2 masks to CLIP patch grid
+- `svd_manipulate_embeddings()`: Core SVD-based semantic manipulation
+- `combine_manipulated_embeddings()`: Combines suppressed/boosted/background embeddings
+
+#### 3. mask.py (New File)
+SAM2 mask generation wrapper.
+
+**Functions:**
+- `get_mask()`: Generates binary mask using SAM2 with point prompts
+
+#### 4. model/pipeline.py (Unchanged from SSV2A)
+Original SSV2A pipeline preserved intact. The `image_to_audio()` function is used as-is for baseline generation.
+
+#### 5. verify_masks.py (New File)
+Interactive tool to verify SAM2 mask coordinates before running the main pipeline.
+
+### How the Hybrid Pipeline Works
+
+```
+1. SAM2 masks identify regions (cat to remove, duck to add)
+2. CLIP tokens extracted from both images
+3. SVD manipulation creates modified global embedding:
+   - Suppress cat semantics in original image patches
+   - Boost duck semantics in edited image patches
+   - Combine with background and direct CLIP embedding
+4. manipulated_image_to_audio() runs SSV2A with:
+   - YOLO detection → local object CLIP embeddings (unchanged)
+   - Manipulated global embedding injected at slot 0 (your contribution)
+   - cycle_mix Remixer blends local + global (unchanged)
+   - AudioLDM generates final audio (unchanged)
+```
 
 ---
 

@@ -38,6 +38,8 @@ def extract_full_clip_tokens(images, batch_size=64, device='cuda'):
             batch_imgs.append(preprocess(img))
 
         batch_tensors = torch.stack(batch_imgs).to(device)
+        # Convert to model's dtype (CLIP uses half precision on GPU)
+        batch_tensors = batch_tensors.to(model.dtype)
 
         with torch.no_grad():
             # Extract features from visual encoder
@@ -65,6 +67,11 @@ def extract_full_clip_tokens(images, batch_size=64, device='cuda'):
 
             # Apply post-LayerNorm
             x = model.visual.ln_post(x)
+
+            # Apply projection to all tokens (not just CLS)
+            # model.visual.proj is [1024, 768] for ViT-L/14
+            if model.visual.proj is not None:
+                x = x @ model.visual.proj
 
             # x now has shape [B, 257, 768] for ViT-L/14 @ 224x224
             # Position 0 is CLS token, positions 1-256 are patch tokens (16x16 grid)
@@ -205,6 +212,10 @@ def svd_manipulate_embeddings(cls_token, patch_tokens, mask_weights, k=10,
 
     # Stack CLS token + selected patches
     X = torch.cat([cls_token.unsqueeze(0), selected_patches], dim=0)  # [n+1, 768]
+    
+    # Store original dtype and convert to float32 for SVD (not supported for half precision)
+    original_dtype = X.dtype
+    X = X.float()
 
     # Perform SVD decomposition
     # X = U × Σ × V^T
@@ -243,7 +254,8 @@ def svd_manipulate_embeddings(cls_token, patch_tokens, mask_weights, k=10,
     # L2-normalize (critical for CLIP compatibility)
     embedding = embedding / embedding.norm(p=2)
 
-    return embedding  # [768]
+    # Convert back to original dtype
+    return embedding.to(original_dtype)  # [768]
 
 
 def combine_manipulated_embeddings(emb_suppress, emb_boost, emb_bg,
