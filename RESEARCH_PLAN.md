@@ -303,16 +303,10 @@ remix_clap [512] → AudioLDM.emb_to_audio() → waveform [1, 220500]
 4. Remixer with cycle_mix to combine local+global embeddings
 5. AudioLDM to generate audio
 
-**Baseline 1: Original image (full SSV2A pipeline)**
+**Baseline: Original image (full SSV2A pipeline)**
 ```
 I_0 → YOLO detect → local CLIPs + global CLIP → Remixer → AudioLDM → audio_original
 Expected: Dog + cat sounds
-```
-
-**Baseline 2: Edited image (full SSV2A pipeline)**
-```
-I_1 → YOLO detect → local CLIPs + global CLIP → Remixer → AudioLDM → audio_edited
-Expected: Dog + duck sounds
 ```
 
 #### Your Method (Hybrid Approach)
