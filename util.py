@@ -1,5 +1,90 @@
 import torch
 import torch.nn.functional as F
+import clip
+from PIL import Image
+import sys
+import os
+
+# Add SSV2A to path for compatibility
+sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'SSV2A'))
+
+
+def extract_full_clip_tokens(images, batch_size=64, device='cuda'):
+    """
+    Extract full CLIP patch tokens + CLS token from images.
+
+    Args:
+        images: List of image file paths
+        batch_size: Batch size for processing
+        device: 'cuda' or 'cpu'
+
+    Returns:
+        Tensor of shape [N, 257, 768] for ViT-L/14
+        - Position 0: CLS token
+        - Positions 1-256: Patch tokens (16x16 grid)
+    """
+    # Load CLIP model
+    model, preprocess = clip.load('ViT-L/14', device=device)
+    model.eval()
+
+    all_tokens = []
+
+    for i in range(0, len(images), batch_size):
+        batch_paths = images[i:i+batch_size]
+        batch_imgs = []
+
+        for img_path in batch_paths:
+            img = Image.open(img_path).convert('RGB')
+            batch_imgs.append(preprocess(img))
+
+        batch_tensors = torch.stack(batch_imgs).to(device)
+        # Convert to model's dtype (CLIP uses half precision on GPU)
+        batch_tensors = batch_tensors.to(model.dtype)
+
+        with torch.no_grad():
+            # Extract features from visual encoder
+            # We need to manually go through the visual encoder to get all tokens
+            x = model.visual.conv1(batch_tensors)  # shape: [B, hidden_dim, grid, grid]
+            x = x.reshape(x.shape[0], x.shape[1], -1)  # [B, hidden_dim, grid*grid]
+            x = x.permute(0, 2, 1)  # [B, grid*grid, hidden_dim]
+
+            # Add CLS token
+            cls_token = model.visual.class_embedding.to(x.dtype) + torch.zeros(
+                x.shape[0], 1, x.shape[-1], dtype=x.dtype, device=x.device
+            )
+            x = torch.cat([cls_token, x], dim=1)  # [B, 1+grid*grid, hidden_dim]
+
+            # Add positional embedding
+            x = x + model.visual.positional_embedding.to(x.dtype)
+
+            # Apply pre-LayerNorm
+            x = model.visual.ln_pre(x)
+
+            # Pass through transformer
+            x = x.permute(1, 0, 2)  # NLD -> LND
+            x = model.visual.transformer(x)
+            x = x.permute(1, 0, 2)  # LND -> NLD
+
+            # Apply post-LayerNorm
+            x = model.visual.ln_post(x)
+
+            # Apply projection to all tokens (not just CLS)
+            # model.visual.proj is [1024, 768] for ViT-L/14
+            if model.visual.proj is not None:
+                x = x @ model.visual.proj
+
+            # x now has shape [B, 257, 768] for ViT-L/14 @ 224x224
+            # Position 0 is CLS token, positions 1-256 are patch tokens (16x16 grid)
+
+        all_tokens.append(x.cpu())
+
+    result = torch.cat(all_tokens, dim=0)  # [N, 257, 768]
+
+    # L2-normalize each token (CLIP standard)
+    result = result / result.norm(dim=-1, keepdim=True)
+
+    return result
+
 
 def _compute_resize_and_center_crop(h, w, target=224):
     if h <= w:
@@ -22,23 +107,53 @@ def _apply_resize_crop_mask(mask, new_size, crop_box):
     x = x[:, :, t:b, l:r]                                 # B x 1 x 224 x 224
     return x[:, 0]                                        # B x 224 x 224
 
-def downsample_mask_to_patch_weights(mask, emb, target_res=224):
+def downsample_mask_to_patch_weights(mask, patch_grid_size=16, threshold=0.5):
     """
-    mask: B x H x W in {0,1} from SAM2 image space
-    emb:  B x T x D CLIP tokens with CLS at index 0
-    returns: B x (T-1) weights aligned to patch tokens emb[:,1:,:]
+    Downsample SAM2 mask to align with CLIP patch grid.
+
+    Args:
+        mask: [B, H, W] binary mask from SAM2 in {0, 1}
+        patch_grid_size: 16 for ViT-L/14 @ 224x224 (produces 16x16=256 patches)
+        threshold: Binarization threshold (default 0.5)
+
+    Returns:
+        [B, 256] binary weights aligned to CLIP patch tokens
+        Each value corresponds to one of the 256 patches
     """
-    Bm, H, W = mask.shape
-    Be, T = emb.shape
-    assert Bm == Be, "batch sizes must match"
-    n_tokens = T - 1
-    g = int(round(n_tokens ** 0.5))       # grid size, e.g. 49 -> 7
-    assert g * g == n_tokens, "patch tokens must form a square grid"
-    new_size, crop_box = _compute_resize_and_center_crop(H, W, target=target_res)
-    mask_224 = _apply_resize_crop_mask(mask, new_size, crop_box)      # B x 224 x 224
-    patch = target_res // g
-    w = F.avg_pool2d(mask_224.unsqueeze(1), kernel_size=patch, stride=patch)  # B x 1 x g x g
-    return w.flatten(1)   # B x (g*g) = B x (T-1)
+    # Ensure mask is a tensor
+    if not isinstance(mask, torch.Tensor):
+        mask = torch.tensor(mask)
+
+    # Add batch dimension if needed
+    if mask.dim() == 2:
+        mask = mask.unsqueeze(0)  # [H, W] -> [1, H, W]
+
+    B, H, W = mask.shape
+
+    # Resize mask to 224x224 (CLIP's input size)
+    mask_resized = F.interpolate(
+        mask.unsqueeze(1).float(),  # [B, 1, H, W]
+        size=(224, 224),
+        mode='bilinear',
+        align_corners=False
+    )  # [B, 1, 224, 224]
+
+    # Downsample to patch grid using average pooling
+    # Each patch is 14x14 pixels (224 / 16 = 14)
+    patch_size = 224 // patch_grid_size
+    patch_weights = F.avg_pool2d(
+        mask_resized,
+        kernel_size=patch_size,
+        stride=patch_size
+    )  # [B, 1, 16, 16]
+
+    # Flatten to [B, 256]
+    patch_weights = patch_weights.view(B, -1)  # [B, 256]
+
+    # Binarize: >= threshold → 1, else → 0
+    patch_weights = (patch_weights >= threshold).float()
+
+    return patch_weights  # [B, 256]
 
 def masked_pool(emb, weights, eps=1e-6):
     """
@@ -52,4 +167,130 @@ def masked_pool(emb, weights, eps=1e-6):
     den = w.sum(dim=1).clamp_min(eps) # B x 1
     out = num / den
     out = out / out.norm(dim=-1, keepdim=True).clamp_min(eps)
-    return out     
+    return out
+
+
+def svd_manipulate_embeddings(cls_token, patch_tokens, mask_weights, k=10,
+                              mode='suppress', alpha=0.1, beta=2.0):
+    """
+    Apply SVD-based suppression/amplification to region-specific tokens.
+
+    This is the core innovation: using SVD to manipulate semantic content
+    in CLIP embedding space.
+
+    Args:
+        cls_token: [768] CLS token from CLIP
+        patch_tokens: [256, 768] all patch tokens from CLIP
+        mask_weights: [256] binary mask indicating which patches belong to target region
+        k: number of top singular values to modify (default 10)
+        mode: 'suppress' (attenuate) or 'boost' (amplify)
+        alpha: suppression factor for mode='suppress' (default 0.1)
+        beta: boost factor for mode='boost' (default 2.0)
+
+    Returns:
+        [768] L2-normalized embedding after SVD manipulation
+
+    Algorithm:
+        1. Extract patches where mask_weights == 1
+        2. Stack [CLS; selected_patches] into matrix X
+        3. Perform SVD: X = U × Σ × V^T
+        4. Modify top-K singular values based on mode
+        5. Reconstruct: X' = U × Σ' × V^T
+        6. Weighted average of all rows in X'
+        7. L2-normalize result
+    """
+    # Get indices where mask == 1
+    mask_indices = (mask_weights > 0.5).nonzero(as_tuple=True)[0]
+
+    # Handle edge case: no patches in this region
+    if len(mask_indices) == 0:
+        print(f"Warning: No patches selected for {mode} (all mask weights <= 0.5)")
+        return torch.zeros(768, device=cls_token.device, dtype=cls_token.dtype)
+
+    # Extract selected patches
+    selected_patches = patch_tokens[mask_indices]  # [n, 768]
+
+    # Stack CLS token + selected patches
+    X = torch.cat([cls_token.unsqueeze(0), selected_patches], dim=0)  # [n+1, 768]
+    
+    # Store original dtype and convert to float32 for SVD (not supported for half precision)
+    original_dtype = X.dtype
+    X = X.float()
+
+    # Perform SVD decomposition
+    # X = U × Σ × V^T
+    # U: [n+1, n+1], S: [n+1], Vt: [768, 768]
+    U, S, Vt = torch.linalg.svd(X, full_matrices=False)
+
+    # Modify top-K singular values
+    S_modified = S.clone()
+    k_actual = min(k, len(S))  # Don't exceed available singular values
+
+    if mode == 'suppress':
+        # Attenuate top-K: reduce strength of dominant semantic components
+        S_modified[:k_actual] = S[:k_actual] * alpha
+    elif mode == 'boost':
+        # Amplify top-K: increase strength of dominant semantic components
+        S_modified[:k_actual] = S[:k_actual] * beta
+    else:
+        raise ValueError(f"Unknown mode: {mode}. Must be 'suppress' or 'boost'")
+
+    # Reconstruct with modified singular values
+    # X' = U × diag(Σ') × V^T
+    X_modified = U @ torch.diag(S_modified) @ Vt  # [n+1, 768]
+
+    # Weighted average of all tokens in modified matrix
+    # Weight CLS token as 1.0, weight patches by their mask values
+    weights = torch.ones(len(mask_indices) + 1, device=X.device)
+    weights[0] = 1.0  # CLS token weight
+    weights[1:] = mask_weights[mask_indices]  # Patch weights
+
+    # Normalize weights
+    weights = weights / weights.sum()
+
+    # Compute weighted average
+    embedding = (X_modified * weights.unsqueeze(1)).sum(dim=0)  # [768]
+
+    # L2-normalize (critical for CLIP compatibility)
+    embedding = embedding / embedding.norm(p=2)
+
+    # Convert back to original dtype
+    return embedding.to(original_dtype)  # [768]
+
+
+def combine_manipulated_embeddings(emb_suppress, emb_boost, emb_bg,
+                                   alpha=0.2, beta=0.5, gamma=0.3):
+    """
+    Combine suppression, boost, and background embeddings.
+
+    Creates a "semantic recipe" by mixing:
+    - Suppressed embedding (object being removed, e.g., cat)
+    - Boosted embedding (object being added, e.g., duck)
+    - Background embedding (unchanged regions)
+
+    Args:
+        emb_suppress: [768] embedding with suppressed semantics
+        emb_boost: [768] embedding with boosted semantics
+        emb_bg: [768] background embedding
+        alpha: weight for suppressed embedding (default 0.2)
+        beta: weight for boosted embedding (default 0.5)
+        gamma: weight for background embedding (default 0.3)
+
+    Returns:
+        [768] L2-normalized combined embedding
+
+    Note: alpha + beta + gamma should ≈ 1.0 for best results
+    """
+    # Validate weights
+    total_weight = alpha + beta + gamma
+    if abs(total_weight - 1.0) > 0.01:
+        print(f"Warning: Mixing weights sum to {total_weight:.3f}, not 1.0")
+        print(f"  alpha={alpha}, beta={beta}, gamma={gamma}")
+
+    # Linear combination
+    combined = alpha * emb_suppress + beta * emb_boost + gamma * emb_bg
+
+    # L2-normalize (critical for SSV2A compatibility)
+    combined = combined / combined.norm(p=2)
+
+    return combined  # [768]     

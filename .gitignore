@@ -1,0 +1,101 @@
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# PyTorch & Model Cache
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.bin
+*.weights
+
+# HuggingFace Cache
+.cache/
+~/.cache/huggingface/
+
+# CLIP Model Cache
+~/.cache/clip/
+
+# Model Checkpoints Directory
+checkpoints/
+*.pth
+*.pt
+
+# SAM2 Models
+*.pt
+configs/
+
+# Output Files
+outputs/
+*.wav
+*.mp3
+*.flac
+*.ogg
+
+# Generated Images/Visualizations
+visualizations/
+*.png
+*.jpg
+*.jpeg
+!images/*.jpg
+!images/*.png
+
+# Temporary Files
+*.tmp
+*.temp
+*.log
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+Icon
+._*
+
+# IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Virtual Environment
+venv/
+env/
+ENV/
+.venv
+
+# Distribution / Packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data Files (if large)
+*.h5
+*.hdf5
+*.npy
+*.npz
+
+# Large Model Files
+audioldm*/
+sam2*/
+
+# Experiment Results
+experiments/
+results/
+logs/

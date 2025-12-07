@@ -40,21 +40,69 @@ sam2_model = build_sam2(model_cfg, sam2_checkpoint, device=device)
 predictor = SAM2ImagePredictor(sam2_model)
 
 
-def get_masks (images, x, y, labels):
-  res = []
-  for image in images:
-    img_arr = np.array(Image.open(image).convert("RGB"))
-    predictor.set_image(img_arr)
+def get_mask(image_path, point_x, point_y, point_labels):
+    """
+    Generate binary segmentation mask using SAM2 for a single image.
 
+    Args:
+        image_path: String path to image file
+        point_x: X coordinate for SAM2 point prompt
+        point_y: Y coordinate for SAM2 point prompt
+        point_labels: List [1] for foreground or [0] for background
+
+    Returns:
+        Binary numpy array [H, W] with values {0.0, 1.0}
+        representing the segmentation mask
+    """
+    # Load image
+    image = Image.open(image_path).convert('RGB')
+    image_np = np.array(image)
+
+    # Set image in predictor
+    predictor.set_image(image_np)
+
+    # Create point prompt
+    point_coords = np.array([[point_x, point_y]])
+    point_labels_arr = np.array(point_labels)
+
+    # Predict mask (single mask output for simplicity)
     masks, scores, logits = predictor.predict(
-        point_coords=np.array([[x,y]]),
-        point_labels=np.array(labels),
-        multimask_output=True,
+        point_coords=point_coords,
+        point_labels=point_labels_arr,
+        multimask_output=False  # Return single best mask
     )
-    sorted_ind = np.argsort(scores)[::-1]
-    masks = masks[sorted_ind]
-    scores = scores[sorted_ind]
-    logits = logits[sorted_ind]
 
-    res.append(masks[0])
-  return res
+    # Return binary mask (first mask, convert to float)
+    return masks[0].astype(np.float32)  # [H, W]
+
+
+def get_masks(images, x, y, labels):
+    """
+    Generate masks for multiple images (batch processing).
+
+    Args:
+        images: List of image file paths
+        x: X coordinate for point prompt
+        y: Y coordinate for point prompt
+        labels: Point labels for SAM2
+
+    Returns:
+        List of binary numpy arrays [H, W]
+    """
+    res = []
+    for image in images:
+        img_arr = np.array(Image.open(image).convert("RGB"))
+        predictor.set_image(img_arr)
+
+        masks, scores, logits = predictor.predict(
+            point_coords=np.array([[x, y]]),
+            point_labels=np.array(labels),
+            multimask_output=True,
+        )
+        sorted_ind = np.argsort(scores)[::-1]
+        masks = masks[sorted_ind]
+        scores = scores[sorted_ind]
+        logits = logits[sorted_ind]
+
+        res.append(masks[0])
+    return res
