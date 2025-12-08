@@ -293,4 +293,237 @@ def combine_manipulated_embeddings(emb_suppress, emb_boost, emb_bg,
     # L2-normalize (critical for SSV2A compatibility)
     combined = combined / combined.norm(p=2)
 
-    return combined  # [768]     
+    return combined  # [768]
+
+
+# ============================================================================
+# Audio Evaluation Metrics (FD, FAD, KL)
+# Based on AudioEditor paper: https://arxiv.org/abs/2410.02964
+# ============================================================================
+
+def calculate_frechet_distance(audio1, audio2, model_name='vggish', sr=16000, device='cuda'):
+    """
+    Calculate Frechet Distance (FD) between two audio samples or directories.
+
+    FD measures the distance between two multivariate Gaussian distributions
+    fitted to audio features. Lower FD indicates more similar audio.
+
+    Args:
+        audio1: Path to audio file or directory of audio files
+        audio2: Path to audio file or directory of audio files
+        model_name: Feature extractor to use ('vggish' or 'pann')
+        sr: Sample rate (default 16000)
+        device: 'cuda' or 'cpu'
+
+    Returns:
+        float: Frechet Distance score (lower is better)
+
+    Note:
+        - For single files: extracts features and computes FD
+        - For directories: computes statistics over all files then FD
+    """
+    import sys
+    import os
+    import tempfile
+    import shutil
+
+    # Save original sys.argv to prevent argparse conflicts
+    original_argv = sys.argv.copy()
+
+    try:
+        # Temporarily set minimal argv during import to avoid argparse conflicts
+        sys.argv = ['audio_eval']
+
+        try:
+            from audioldm_eval import EvaluationHelper
+        except ImportError:
+            raise ImportError(
+                "audioldm_eval is required. Install with: "
+                "pip install git+https://github.com/haoheliu/audioldm_eval.git"
+            )
+    finally:
+        # Always restore original argv
+        sys.argv = original_argv
+
+    # Determine if inputs are files or directories
+    is_file1 = os.path.isfile(audio1)
+    is_file2 = os.path.isfile(audio2)
+
+    # Initialize evaluator
+    evaluator = EvaluationHelper(sr, device)
+
+    if is_file1 and is_file2:
+        # For single files, create temporary directories
+        with tempfile.TemporaryDirectory() as tmpdir1, \
+             tempfile.TemporaryDirectory() as tmpdir2:
+
+            # Copy files to temp directories with same name for matching
+            shutil.copy(audio1, os.path.join(tmpdir1, 'audio.wav'))
+            shutil.copy(audio2, os.path.join(tmpdir2, 'audio.wav'))
+
+            # Calculate metrics (returns dict with FD, FAD, KL, IS)
+            metrics = evaluator.calculate_metrics(
+                tmpdir1, tmpdir2,
+                same_name=True
+            )
+            fd_score = metrics['frechet_distance']
+    else:
+        # Directory comparison
+        metrics = evaluator.calculate_metrics(
+            audio1, audio2,
+            same_name=False
+        )
+        fd_score = metrics['frechet_distance']
+
+    return fd_score
+
+
+def calculate_frechet_audio_distance(audio1, audio2, sr=16000, device='cuda'):
+    """
+    Calculate Frechet Audio Distance (FAD) between two audio samples or directories.
+
+    FAD uses VGGish features to compute the Frechet distance between audio distributions.
+    This is the standard metric used in the AudioEditor paper.
+
+    Args:
+        audio1: Path to audio file or directory of audio files
+        audio2: Path to audio file or directory of audio files
+        sr: Sample rate (default 16000)
+        device: 'cuda' or 'cpu'
+
+    Returns:
+        float: FAD score (lower is better)
+
+    Reference:
+        AudioEditor paper uses VGGish model for FAD computation
+    """
+    import sys
+    import os
+
+    # Save original sys.argv to prevent argparse conflicts
+    # Some audio libraries have argparse at module level which conflicts with our script
+    original_argv = sys.argv.copy()
+
+    try:
+        # Temporarily set minimal argv during import to avoid argparse conflicts
+        sys.argv = ['audio_eval']
+
+        try:
+            from frechet_audio_distance import FrechetAudioDistance
+        except ImportError:
+            raise ImportError(
+                "frechet_audio_distance is required. Install with: "
+                "pip install frechet-audio-distance"
+            )
+    finally:
+        # Always restore original argv
+        sys.argv = original_argv
+
+    # Determine if inputs are files or directories
+    is_file1 = os.path.isfile(audio1)
+    is_file2 = os.path.isfile(audio2)
+
+    # Initialize FAD calculator with VGGish model
+    frechet = FrechetAudioDistance(
+        model_name="vggish",
+        sample_rate=sr,
+        use_pca=False,
+        use_activation=False,
+        verbose=False
+    )
+
+    if is_file1 and is_file2:
+        # For single files, create temporary directories
+        import tempfile
+        import shutil
+
+        with tempfile.TemporaryDirectory() as tmpdir1, \
+             tempfile.TemporaryDirectory() as tmpdir2:
+
+            # Copy files to temp directories
+            shutil.copy(audio1, tmpdir1)
+            shutil.copy(audio2, tmpdir2)
+
+            # Calculate FAD on directories
+            fad_score = frechet.score(tmpdir1, tmpdir2)
+    else:
+        # Directory comparison
+        fad_score = frechet.score(audio1, audio2)
+
+    return fad_score
+
+
+def calculate_kl_divergence(audio1, audio2, model_name='pann', sr=16000, device='cuda'):
+    """
+    Calculate Kullback-Leibler (KL) divergence between two audio samples or directories.
+
+    KL divergence measures how one probability distribution diverges from another.
+    Uses PANNs classifier features as specified in AudioEditor paper.
+
+    Args:
+        audio1: Path to audio file or directory of audio files
+        audio2: Path to audio file or directory of audio files
+        model_name: Feature extractor to use (default 'pann')
+        sr: Sample rate (default 16000)
+        device: 'cuda' or 'cpu'
+
+    Returns:
+        float: KL divergence score (lower is better, 0 = identical distributions)
+
+    Reference:
+        AudioEditor paper uses PANNs classifier for KL computation
+    """
+    import sys
+    import os
+    import tempfile
+    import shutil
+
+    # Save original sys.argv to prevent argparse conflicts
+    original_argv = sys.argv.copy()
+
+    try:
+        # Temporarily set minimal argv during import to avoid argparse conflicts
+        sys.argv = ['audio_eval']
+
+        try:
+            from audioldm_eval import EvaluationHelper
+        except ImportError:
+            raise ImportError(
+                "audioldm_eval is required. Install with: "
+                "pip install git+https://github.com/haoheliu/audioldm_eval.git"
+            )
+    finally:
+        # Always restore original argv
+        sys.argv = original_argv
+
+    # Determine if inputs are files or directories
+    is_file1 = os.path.isfile(audio1)
+    is_file2 = os.path.isfile(audio2)
+
+    # Initialize evaluator
+    evaluator = EvaluationHelper(sr, device)
+
+    if is_file1 and is_file2:
+        # For single files, create temporary directories
+        with tempfile.TemporaryDirectory() as tmpdir1, \
+             tempfile.TemporaryDirectory() as tmpdir2:
+
+            # Copy files to temp directories with same name for matching
+            shutil.copy(audio1, os.path.join(tmpdir1, 'audio.wav'))
+            shutil.copy(audio2, os.path.join(tmpdir2, 'audio.wav'))
+
+            # Calculate metrics (returns dict with FD, FAD, KL, IS)
+            metrics = evaluator.calculate_metrics(
+                tmpdir1, tmpdir2,
+                same_name=True
+            )
+            kl_score = metrics['kullback_leibler_divergence_softmax']
+    else:
+        # Directory comparison
+        metrics = evaluator.calculate_metrics(
+            audio1, audio2,
+            same_name=False
+        )
+        kl_score = metrics['kullback_leibler_divergence_softmax']
+
+    return kl_score
