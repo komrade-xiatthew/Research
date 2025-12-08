@@ -191,13 +191,15 @@ final_emb = combine_manipulated_embeddings(
 
 ```python
 # Calculate Fréchet Distance (PANNs features)
-fd = calculate_frechet_distance('audio1.wav', 'audio2.wav', device='cpu')
+fd = calculate_frechet_distance('audio1.wav', 'audio2.wav', sr=16000, device='cpu')
 
 # Calculate Fréchet Audio Distance (VGGish features)
-fad = calculate_frechet_audio_distance('audio1.wav', 'audio2.wav', device='cpu')
+fad = calculate_frechet_audio_distance('audio1.wav', 'audio2.wav', sr=16000, device='cpu')
 
 # Calculate KL Divergence (PANNs features)
-kl = calculate_kl_divergence('audio1.wav', 'audio2.wav', device='cpu')
+kl = calculate_kl_divergence('audio1.wav', 'audio2.wav', sr=16000, device='cpu')
+
+print(f"FD: {fd:.4f}, FAD: {fad:.4f}, KL: {kl:.4f}")
 ```
 
 ### `mask.py`
@@ -354,17 +356,18 @@ pip install frechet-audio-distance
 #### Usage
 
 ```bash
-# Compare two audio files
-python audio_eval.py --audio1 generated.wav --audio2 reference.wav --device cpu
+# Compare two audio files (use --device cpu on Mac, --device cuda on GPU machines)
+python audio_eval.py --audio1 manipulated_audio.wav --audio2 reference.wav --device cpu
 
 # Compare two directories
 python audio_eval.py --audio1 outputs/ --audio2 references/ --device cpu
 
 # Compute only specific metrics
 python audio_eval.py --audio1 a.wav --audio2 b.wav --metrics fad kl --device cpu
-```
 
-**Note:** Use `--device cpu` on Mac (CUDA not available). Use `--device cuda` on Linux/Windows with GPU.
+# Use GPU if available (Linux/Windows with CUDA)
+python audio_eval.py --audio1 a.wav --audio2 b.wav --device cuda
+```
 
 #### Example Output
 
@@ -398,7 +401,7 @@ Use these metrics to compare:
 
 #### API Usage
 
-You can also import the functions directly:
+You can also import the functions directly in Python:
 
 ```python
 from util import (
@@ -407,10 +410,10 @@ from util import (
     calculate_kl_divergence
 )
 
-# Compare two audio files
-fd = calculate_frechet_distance('audio1.wav', 'audio2.wav', device='cpu')
-fad = calculate_frechet_audio_distance('audio1.wav', 'audio2.wav', device='cpu')
-kl = calculate_kl_divergence('audio1.wav', 'audio2.wav', device='cpu')
+# Compare two audio files (use device='cpu' on Mac, device='cuda' with GPU)
+fd = calculate_frechet_distance('manipulated_audio.wav', 'reference.wav', sr=16000, device='cpu')
+fad = calculate_frechet_audio_distance('manipulated_audio.wav', 'reference.wav', sr=16000, device='cpu')
+kl = calculate_kl_divergence('manipulated_audio.wav', 'reference.wav', sr=16000, device='cpu')
 
 print(f"FD: {fd:.4f}, FAD: {fad:.4f}, KL: {kl:.4f}")
 ```
