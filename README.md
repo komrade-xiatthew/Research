@@ -10,6 +10,7 @@ This project implements a pipeline that:
 3. Extracts full CLIP patch tokens (not just CLS token)
 4. Applies SVD-based suppression/amplification to region-specific embeddings
 5. Feeds manipulated CLIP embeddings through SSV2A to generate audio
+6. Evaluates audio quality using FD, FAD, and KL metrics (AudioEditor paper)
 
 **Research Question:** Can we generate audio that reflects visual edits by manipulating CLIP embeddings at the patch level using SVD?
 
@@ -17,8 +18,9 @@ This project implements a pipeline that:
 
 - **`RESEARCH_PLAN.md`**: Complete detailed research methodology and mathematical foundation
 - **`main.py`**: Complete 10-step pipeline implementation
-- **`util.py`**: Core utility functions (CLIP extraction, SVD manipulation, embedding combination)
+- **`util.py`**: Core utility functions (CLIP extraction, SVD manipulation, embedding combination, audio evaluation metrics)
 - **`mask.py`**: SAM2 mask generation
+- **`audio_eval.py`**: Audio quality evaluation tool (FD, FAD, KL metrics)
 - **`test.py`**: Evaluation utilities and component tests
 - **`ssv2a.json`**: SSV2A model configuration
 
@@ -185,6 +187,21 @@ final_emb = combine_manipulated_embeddings(
 # Returns: [768] L2-normalized combined embedding
 ```
 
+#### Audio Evaluation Functions
+
+```python
+# Calculate Fréchet Distance (PANNs features)
+fd = calculate_frechet_distance('audio1.wav', 'audio2.wav', sr=16000, device='cpu')
+
+# Calculate Fréchet Audio Distance (VGGish features)
+fad = calculate_frechet_audio_distance('audio1.wav', 'audio2.wav', sr=16000, device='cpu')
+
+# Calculate KL Divergence (PANNs features)
+kl = calculate_kl_divergence('audio1.wav', 'audio2.wav', sr=16000, device='cpu')
+
+print(f"FD: {fd:.4f}, FAD: {fad:.4f}, KL: {kl:.4f}")
+```
+
 ### `mask.py`
 
 #### `get_mask(image_path, point_x, point_y, point_labels)`
@@ -301,17 +318,110 @@ This will test:
 
 ## Evaluation
 
-Compare results:
+### Audio Quality Metrics (FD, FAD, KL)
+
+We provide a comprehensive evaluation tool based on the **AudioEditor paper (ICASSP 2025)** to measure audio quality and similarity.
+
+#### Metrics
+
+- **FD (Fréchet Distance)**: Measures distribution distance using PANNs features
+- **FAD (Fréchet Audio Distance)**: Standard metric using VGGish features
+- **KL (Kullback-Leibler Divergence)**: Measures distribution divergence using PANNs softmax
+
+**Lower scores = more similar audio**
+
+#### Installation
+
+The evaluation requires special installation to avoid dependency conflicts:
+
+```bash
+# Step 1: Install ssr_eval without dependencies (avoids Python 2 MySQL-python issue)
+pip install ssr_eval --no-deps
+
+# Step 2: Install audioldm_eval without dependencies
+pip install git+https://github.com/haoheliu/audioldm_eval.git --no-deps
+
+# Step 3: Install remaining dependencies
+pip install scikit-image absl-py
+
+# Step 4: Fix numpy/scipy versions (if needed)
+pip install numpy==1.23.4 scipy==1.10.1
+
+# Step 5: Install FAD package
+pip install frechet-audio-distance
+```
+
+**Why this workaround?** `audioldm_eval` has a broken dependency chain (`ssr_eval` → `wave` → `MySQL-python`) that only works in Python 2. Installing with `--no-deps` bypasses this issue.
+
+#### Usage
+
+```bash
+# Compare two audio files (use --device cpu on Mac, --device cuda on GPU machines)
+python audio_eval.py --audio1 manipulated_audio.wav --audio2 reference.wav --device cpu
+
+# Compare two directories
+python audio_eval.py --audio1 outputs/ --audio2 references/ --device cpu
+
+# Compute only specific metrics
+python audio_eval.py --audio1 a.wav --audio2 b.wav --metrics fad kl --device cpu
+
+# Use GPU if available (Linux/Windows with CUDA)
+python audio_eval.py --audio1 a.wav --audio2 b.wav --device cuda
+```
+
+#### Example Output
+
+```
+======================================================================
+  RESULTS
+======================================================================
+
+FD (Frechet Distance)    : 7.6093
+                           (Lower is better)
+
+FAD (Frechet Audio Dist.): 34.1894
+                           (Lower is better)
+
+KL (KL Divergence)       : 0.0038
+                           (Lower is better, 0 = identical)
+
+======================================================================
+```
+
+#### Interpretation
+
+- **FD < 10**: Very similar audio (same acoustic characteristics)
+- **FAD < 30**: Good similarity (perceptually similar)
+- **KL < 0.5**: Low divergence (similar frequency distributions)
+
+Use these metrics to compare:
+- Manipulated audio vs. original audio (how much change?)
+- Manipulated audio vs. target audio (did manipulation work?)
+- Baseline methods vs. your approach (quantitative improvement?)
+
+#### API Usage
+
+You can also import the functions directly in Python:
 
 ```python
-from test import compare_embeddings, generate_baseline_from_image
+from util import (
+    calculate_frechet_distance,
+    calculate_frechet_audio_distance,
+    calculate_kl_divergence
+)
 
-# Generate baselines
-generate_baseline_from_image('image.jpg', 'baseline', 'ssv2a.json', 'checkpoints/ssv2a.pth')
+# Compare two audio files (use device='cpu' on Mac, device='cuda' with GPU)
+fd = calculate_frechet_distance('manipulated_audio.wav', 'reference.wav', sr=16000, device='cpu')
+fad = calculate_frechet_audio_distance('manipulated_audio.wav', 'reference.wav', sr=16000, device='cpu')
+kl = calculate_kl_divergence('manipulated_audio.wav', 'reference.wav', sr=16000, device='cpu')
 
-# Compare embeddings
-metrics = compare_embeddings(emb1, emb2, "Original", "Manipulated")
+print(f"FD: {fd:.4f}, FAD: {fad:.4f}, KL: {kl:.4f}")
 ```
+
+#### References
+
+- **AudioEditor (ICASSP 2025)**: https://arxiv.org/abs/2410.02964
+- Uses PANNs for FD/KL and VGGish for FAD as per paper specification
 
 ## Research Contributions
 
@@ -332,7 +442,7 @@ metrics = compare_embeddings(emb1, emb2, "Original", "Manipulated")
 - [ ] Learn optimal K, α, β values through training
 - [ ] Multi-object manipulation (>2 objects)
 - [ ] Temporal control for longer sequences
-- [ ] Quantitative evaluation metrics
+- [x] Quantitative evaluation metrics (FD, FAD, KL implemented)
 
 ## References
 
