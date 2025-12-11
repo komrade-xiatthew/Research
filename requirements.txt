@@ -11,9 +11,9 @@ git+https://github.com/haoheliu/AudioLDM.git
 #   2. pip install git+https://github.com/haoheliu/audioldm_eval.git
 #
 # This installs ssr_eval without its dependencies, then audioldm_eval finds it already installed
-git+https://github.com/haoheliu/audioldm_eval.git
 frechet_audio_distance
-
+scikit-image
+absl-py
 dalle2-pytorch # need this to accomodate the pretrained DALLE2 prior from LAION
 librosa
 numpy
@@ -28,3 +28,4 @@ wav2clip
 kneed
 transformers
 textblob
+torchcodec
