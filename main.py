@@ -539,8 +539,8 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
 
     # Define image paths (modify these according to your setup)
-    img_0_path = os.path.join(IMAGE_DIR, "original.JPG")  # Original image
-    img_1_path = os.path.join(IMAGE_DIR, "edit.JPG")  # Edited image
+    img_0_path = os.path.join(IMAGE_DIR, "original.png")  # Original image
+    img_1_path = os.path.join(IMAGE_DIR, "edit.png")  # Edited image
 
     # Check if images exist
     if not os.path.exists(img_0_path):
