@@ -8,7 +8,7 @@ git+https://github.com/haoheliu/AudioLDM.git
 #
 # Installation workaround:
 #   1. pip install ssr_eval --no-deps
-#   2. pip install git+https://github.com/haoheliu/audioldm_eval.git
+#   2. pip install git+https://github.com/haoheliu/audioldm_eval.git --no-deps
 #
 # This installs ssr_eval without its dependencies, then audioldm_eval finds it already installed
 frechet_audio_distance
